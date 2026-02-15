@@ -1,0 +1,298 @@
+<flow name="list-department">
+  <http:listener config-ref="HTTP_Listener_config" path="/hr-agent/query/list-department/{dept}"/>
+  <db:select config-ref="hr-db-config">
+    <db:sql><![CDATA[
+      SELECT department, COUNT(*) as employee_count, 
+             string_agg(name, ', ') as employees
+      FROM employees 
+      WHERE department ILIKE :department
+      GROUP BY department
+    ]]></db:sql>
+    <db:input-parameters>#[{
+      department: "%" ++ attributes.uriParams.dept ++ "%"
+    }]</db:input-parameters>
+  </db:select>
+  <ee:transform>
+    <ee:message>
+      <ee:set-payload>#[{
+        status: "success",
+        capability: "list-department",
+        agent: "employee-query-agent",
+        department: attributes.uriParams.dept,
+        data: payload,
+        totalEmployees: (payload[0].employee_count default 0) as Number
+      }]</ee:set-payload>
+    </ee:message>
+  </ee:transform>
+</flow>
+
+<flow name="get-employee-details">
+  <http:listener config-ref="HTTP_Listener_config" path="/hr-agent/query/get-employee-details/{id}"/>
+  <db:select config-ref="hr-db-config">
+    <db:sql><![CDATA[
+      SELECT e.*, 
+             string_agg(eq.equipment, ', ') as equipment
+      FROM employees e
+      LEFT JOIN employee_equipment eq ON e.id = eq.employee_id
+      WHERE e.id = :id
+      GROUP BY e.id
+    ]]></db:sql>
+    <db:input-parameters>#[{id: attributes.uriParams.id}]</db:input-parameters>
+  </db:select>
+  <choice>
+    <when expression="#[payload.id?]">
+      <ee:transform>
+        <ee:message>
+          <ee:set-payload>#[{
+            status: "success",
+            capability: "get-employee-details",
+            agent: "employee-query-agent",
+            data: payload
+          }]</ee:set-payload>
+        </ee:message>
+      </ee:transform>
+    </when>
+    <otherwise>
+      <ee:transform>
+        <ee:message>
+          <ee:set-payload>#[{
+            status: "error",
+            error: "Employee not found",
+            employeeId: attributes.uriParams.id
+          }]</ee:set-payload>
+        </ee:message>
+      </ee:transform>
+      <http:response-status code="404"/>
+    </otherwise>
+  </choice>
+</flow>
+<flow name="search-employee">
+  <http:listener config-ref="HTTP_Listener_config" path="/hr-agent/query/search-employee"/>
+  <db:select config-ref="hr-db-config">
+    <db:sql><![CDATA[
+      SELECT id, name, email, department, status, onboarded_at 
+      FROM employees 
+      WHERE name ILIKE :query OR email ILIKE :query OR department ILIKE :query
+      ORDER BY onboarded_at DESC
+      LIMIT 10
+    ]]></db:sql>
+    <db:input-parameters>#[{
+      query: "%" ++ (payload.query default "") ++ "%"
+    }]</db:input-parameters>
+  </db:select>
+  <ee:transform>
+    <ee:message>
+      <ee:set-payload>#[{
+        status: "success",
+        capability: "search-employee",
+        agent: "employee-query-agent",
+        total: sizeOf(payload),
+        data: payload
+      }]</ee:set-payload>
+    </ee:message>
+  </ee:transform>
+</flow>
+<flow name="compliance-audit">
+  <http:listener config-ref="HTTP_Listener_config" path="/hr-agent/policy/compliance-audit"/>
+  <db:select config-ref="hr-db-config">
+    <db:sql>SELECT * FROM employees WHERE id = :employeeId</db:sql>
+    <db:input-parameters>#[{employeeId: payload.employeeId}]</db:input-parameters>
+  </db:select>
+  <logger level="INFO" message="Compliance audit for employee: #[payload.employeeId] - Status: #[payload.status]"/>
+  <ee:transform>
+    <ee:message>
+      <ee:set-payload>#[{
+        status: "success",
+        capability: "compliance-audit",
+        agent: "hr-policy-agent",
+        compliant: true,
+        auditDate: now(),
+        violations: [],
+        riskScore: 2.1,
+        recommendations: ["Update emergency contact", "Complete annual training"]
+      }]</ee:set-payload>
+    </ee:message>
+  </ee:transform>
+</flow>
+<flow name="check-eligibility">
+  <http:listener config-ref="HTTP_Listener_config" path="/hr-agent/policy/check-eligibility"/>
+  <ee:transform>
+    <ee:message>
+      <ee:set-payload>#[{
+        status: "success",
+        capability: "check-eligibility",
+        agent: "hr-policy-agent",
+        eligible: true,
+        criteria: {
+          age: (payload.age default 0) >= 18,
+          backgroundCheck: payload.backgroundCheck default false,
+          documents: sizeOf(payload.documents default []) >= 3,
+          workAuthorization: payload.workAuth default false,
+          departmentApproval: payload.deptApproval default true
+        },
+        score: 95,
+        message: "Employee meets all eligibility criteria"
+      }]</ee:set-payload>
+    </ee:message>
+  </ee:transform>
+</flow>
+<flow name="validate-onboarding">
+  <http:listener config-ref="HTTP_Listener_config" path="/hr-agent/policy/validate-onboarding"/>
+  <db:select config-ref="hr-db-config">
+    <db:sql>SELECT * FROM hr_policies WHERE policy_name ILIKE '%onboarding%' AND is_active = true</db:sql>
+  </db:select>
+  <ee:transform>
+    <ee:message>
+      <ee:set-payload>#[{
+        status: "success",
+        capability: "validate-onboarding",
+        agent: "hr-policy-agent",
+        valid: true,
+        policyId: payload.id,
+        requiredSteps: ["identity-verification", "documents", "training", "equipment", "policy-acknowledgement"],
+        completedSteps: payload.completed default [],
+        remainingSteps: ["training", "policy-acknowledgement"]
+      }]</ee:set-payload>
+    </ee:message>
+  </ee:transform>
+</flow>
+<flow name="assign-equipment">
+  <http:listener config-ref="HTTP_Listener_config" path="/hr-agent/onboarding/assign-equipment"/>
+  <ee:transform doc:name="Determine Equipment">
+    <ee:message>
+      <ee:set-payload>#[{
+        employeeId: payload.employeeId,
+        department: payload.department,
+        equipment: if(payload.department == "Engineering") "MacBook Pro M3, 32GB RAM" 
+                  else if(payload.department == "Design") "iMac 27-inch, Wacom Tablet" 
+                  else "Dell Latitude 5540, Dual Monitors"
+      }]</ee:set-payload>
+    </ee:message>
+  </ee:transform>
+  <http:request method="POST" url="http://mcp-server:8080/tools/equipment-assign">
+    <http:body>#[payload]</http:body>
+  </http:request>
+  <db:insert config-ref="hr-db-config">
+    <db:sql>INSERT INTO employee_equipment (employee_id, equipment, status, assigned_at) 
+            VALUES (:employeeId, :equipment, 'assigned', CURRENT_TIMESTAMP)</db:sql>
+    <db:input-parameters>#[{
+      employeeId: payload.employeeId,
+      equipment: payload.equipment
+    }]</db:input-parameters>
+  </db:insert>
+  <ee:transform>
+    <ee:message>
+      <ee:set-payload>#[{
+        status: "success",
+        capability: "assign-equipment",
+        agent: "employee-onboarding-agent",
+        data: payload
+      }]</ee:set-payload>
+    </ee:message>
+  </ee:transform>
+</flow>
+<flow name="send-welcome-email">
+  <http:listener config-ref="HTTP_Listener_config" path="/hr-agent/onboarding/send-welcome-email"/>
+  <http:request method="POST" url="http://mcp-server:8080/tools/email-send" doc:name="Call MCP Email Tool">
+    <http:headers>#[{
+      'Content-Type': 'application/json'
+    }]</http:headers>
+    <http:body>#[{
+      to: payload.email,
+      subject: "Welcome to Company! 🎉",
+      body: """
+        Dear """ ++ payload.name ++ """,
+        
+        Welcome to the team! Your account has been created successfully.
+        
+        Department: """ ++ (payload.department default "") ++ """
+        Employee ID: """ ++ (payload.employeeId default "") ++ """
+        
+        Next steps:
+        1. Complete onboarding training
+        2. Check your equipment assignment
+        3. Review company policies
+        
+        Best regards,
+        HR Team
+      """,
+      agent: "employee-onboarding-agent",
+      capability: "send-welcome-email"
+    }]</http:body>
+  </http:request>
+  <ee:transform>
+    <ee:message>
+      <ee:set-payload>#[{
+        status: "success",
+        capability: "send-welcome-email",
+        agent: "employee-onboarding-agent",
+        data: {
+          email: payload.to,
+          sentAt: now(),
+          messageId: payload.messageId default "sent"
+        }
+      }]</ee:set-payload>
+    </ee:message>
+  </ee:transform>
+</flow>
+<flow name="create-employee-record">
+  <http:listener config-ref="HTTP_Listener_config" path="/hr-agent/onboarding/create-employee-record"/>
+  <try>
+    <choice>
+      <when expression="#[payload.name? && payload.email? && payload.department?]">
+        <db:insert config-ref="hr-db-config">
+          <db:sql><![CDATA[
+            INSERT INTO employees (name, email, department, status, onboarded_at) 
+            VALUES (:name, :email, :department, 'pending', CURRENT_TIMESTAMP)
+            RETURNING id
+          ]]></db:sql>
+          <db:input-parameters>#[{
+            name: payload.name,
+            email: payload.email,
+            department: payload.department
+          }]</db:input-parameters>
+        </db:insert>
+        <ee:transform>
+          <ee:message>
+            <ee:set-payload>#[{
+              status: "success",
+              capability: "create-employee-record",
+              agent: "employee-onboarding-agent",
+              data: {
+                employeeId: payload.id,
+                name: payload.name,
+                email: payload.email,
+                department: payload.department,
+                createdAt: now()
+              }
+            }]</ee:set-payload>
+          </ee:message>
+        </ee:transform>
+      </when>
+      <otherwise>
+        <ee:transform>
+          <ee:message>
+            <ee:set-payload>#[{
+              status: "error",
+              error: "Missing required fields: name, email, department"
+            }]</ee:set-payload>
+          </ee:message>
+        </ee:transform>
+        <http:response-status code="400"/>
+      </otherwise>
+    </choice>
+    <error-handler>
+      <on-error-continue type="DB:CONNECTIVITY">
+        <ee:transform>
+          <ee:message>
+            <ee:set-payload>#[{
+              status: "error",
+              error: "Database unavailable"
+            }]</ee:set-payload>
+          </ee:message>
+        </ee:transform>
+        <http:response-status code="503"/>
+      </on-error-continue>
+    </error-handler>
+  </try>
+</flow>

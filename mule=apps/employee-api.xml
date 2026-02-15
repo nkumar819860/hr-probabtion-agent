@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mule.com/mule-core/current/mule"
+      xmlns:db="http://www.mule.com/seda/db/1.10"
+      xmlns:ee="http://www.mule.com/seda/ee/core"
+      xmlns:http="http://www.mule.com/http/current/mule-http">
+  
+  <!-- GET /employees -->
+  <flow name="get-all-employees">
+    <http:listener config-ref="HTTP_Listener_config" path="/employees" method="GET"/>
+    
+    <db:select config-ref="HR_Database_Config">
+      <db:sql><![CDATA[
+        SELECT employee_id, name, email, department, hire_date, 
+               probation_end_date, probation_status, created_at 
+        FROM employees 
+        ORDER BY hire_date DESC
+      ]]></db:sql>
+    </db:select>
+    
+    <ee:transform doc:name="Format Response">
+      <ee:message>
+        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  success: true,
+  total: sizeOf(payload),
+  employees: payload map {
+    employeeId: $.employee_id,
+    name: $.name,
+    email: $.email,
+    department: $.department,
+    hireDate: $.hire_date as String {format: "yyyy-MM-dd"},
+    probationEndDate: $.probation_end_date as String {format: "yyyy-MM-dd"},
+    probationStatus: $.probation_status,
+    hireDaysAgo: daysBetween($.hire_date as Date {format: "yyyy-MM-dd"}, now() as Date {format: "yyyy-MM-dd"})
+  }
+}]]></ee:set-payload>
+      </ee:message>
+    </ee:transform>
+  </flow>
+
+  <!-- GET /employees/{id} -->
+  <flow name="get-employee-by-id">
+    <http:listener config-ref="HTTP_Listener_config" path="/employees/{id}" method="GET"/>
+    
+    <db:select config-ref="HR_Database_Config">
+      <db:sql><![CDATA[SELECT * FROM employees WHERE employee_id = :id]]></db:sql>
+      <db:input-parameters>#[{ id: attributes.pathParameters.id }]</db:input-parameters>
+    </db:select>
+    
+    <choice>
+      <when expression="#[sizeOf(payload) > 0]">
+        <ee:transform>
+          <ee:message>
+            <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  success: true,
+  employee: {
+    employeeId: payload[0].employee_id,
+    name: payload[0].name,
+    email: payload[0].email,
+    department: payload[0].department,
+    hireDate: payload[0].hire_date as String {format: "yyyy-MM-dd"},
+    probationEndDate: payload[0].probation_end_date as String {format: "yyyy-MM-dd"},
+    probationStatus: payload[0].probation_status,
+    daysInProbation: daysBetween(
+      payload[0].hire_date as Date {format: "yyyy-MM-dd"}, 
+      payload[0].probation_end_date as Date {format: "yyyy-MM-dd"}
+    )
+  }
+}]]></ee:set-payload>
+          </ee:message>
+        </ee:transform>
+      </when>
+      <otherwise>
+        <set-payload value="#[output application/json --- {
+          success: false, 
+          error: 'Employee not found: ' ++ attributes.pathParameters.id
+        }]"/>
+        <set-attribute value="#[404]" name="httpStatus"/>
+      </otherwise>
+    </choice>
+  </flow>
+
+  <!-- POST /employees -->
+  <flow name="create-employee">
+    <http:listener config-ref="HTTP_Listener_config" path="/employees" method="POST"/>
+    
+    <db:insert config-ref="HR_Database_Config">
+      <db:sql><![CDATA[
+        INSERT INTO employees (employee_id, name, email, department, hire_date, probation_end_date)
+        VALUES (:employeeId, :name, :email, :department, :hireDate, :probationEndDate)
+      ]]></db:sql>
+      <db:input-parameters>#[payload]</db:input-parameters>
+    </db:insert>
+    
+    <ee:transform>
+      <ee:message>
+        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  success: true,
+  message: "Employee created successfully",
+  employeeId: payload.employeeId,
+  timestamp: now()
+}]]></ee:set-payload>
+      </ee:message>
+    </ee:transform>
+  </flow>
+</mule>

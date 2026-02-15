@@ -1,0 +1,155 @@
+version: '3.8'
+
+x-base-mule-env: &mule-env
+  MULE_ENV: dev
+  MULE_VERBOSE_DEPLOYMENT: "true"
+  DB_HOST: postgres
+  DB_PORT: 5432
+  DB_NAME: hr_db
+  DB_USER: hr_user
+  DB_PASS: hr_pass123
+  MCP_HOST: mcp-server
+  MCP_PORT: 8080
+
+services:
+  # 1. POSTGRESQL DATABASE
+  postgres:
+    image: postgres:15-alpine
+    container_name: hr-postgres
+    environment:
+      POSTGRES_DB: hr_db
+      POSTGRES_USER: hr_user
+      POSTGRES_PASSWORD: hr_pass123
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hr_user -d hr_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - hr-network
+
+  # 2. MULE RUNTIME (Agent Fabric Broker + All 9 APIs)
+  mule-agent-broker:
+    image: mulesoft/mule-ee:4.5.0
+    container_name: hr-mule-agent-broker
+    ports:
+      - "8081:8081"
+    environment: *mule-env
+    volumes:
+      - ./agent-fabric-broker.xml:/opt/mule/apps/agent-fabric-broker.xml:ro
+      - ./hr-agent-network.yaml:/opt/mule/apps/hr-agent-network.yaml:ro
+      - mule_apps:/opt/mule/apps
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mcp-server:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/agent-fabric/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks:
+      - hr-network
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  # 3. FLEX GATEWAY (API Management Layer)
+  flex-gateway:
+    image: mulesoft/flex-gateway:latest-local
+    container_name: hr-flex-gateway
+    ports:
+      - "8200:8080"  # HTTP
+      - "8210:8443"  # HTTPS
+    volumes:
+      - flex_data:/usr/local/share/mulesoft/flex-gateway/conf.d
+      - ./flex-config:/usr/local/share/mulesoft/flex-gateway/conf.d:ro
+    environment:
+      - FLEX_LOG_LEVEL=info
+    depends_on:
+      - mule-agent-broker
+    networks:
+      - hr-network
+    command: >
+      sh -c "
+        flexctl api create hr-agent-network-api.yaml &&
+        flexctl policy apply hr-agent-rate-limit.yaml &&
+        flexctl start
+      "
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/agent-fabric/health"]
+      interval: 30s
+      retries: 5
+
+  # 4. MCP SERVER (Agent Tools & Capabilities)
+  mcp-server:
+    image: mulesoft/mcp-server:latest
+    container_name: hr-mcp-server
+    ports:
+      - "8082:8080"
+    environment:
+      - MCP_PORT=8080
+      - POSTGRES_URL=jdbc:postgresql://postgres:5432/hr_db
+      - POSTGRES_USER=hr_user
+      - POSTGRES_PASS=hr_pass123
+    volumes:
+      - ./mcp-tools:/app/tools:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - hr-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 20s
+      retries: 5
+
+  # 5. AGENT FABRIC OBSERVABILITY (Optional Prometheus + Grafana)
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: hr-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+    networks:
+      - hr-network
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: hr-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin123
+    volumes:
+      - grafana_data:/var/lib/grafana
+    networks:
+      - hr-network
+
+volumes:
+  postgres_data:
+  mule_apps:
+  flex_data:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  hr-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16

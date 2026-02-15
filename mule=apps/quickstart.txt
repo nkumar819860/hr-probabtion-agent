@@ -1,0 +1,98 @@
+# 1. Full deployment (3 mins)
+chmod +x deploy.sh
+./deploy.sh
+
+# 2. Test PRODUCTION API (Flex Gateway)
+curl -X POST http://localhost:8200/hr-agent/onboard \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Bob Wilson","email":"bob@company.com","department":"HR"}'
+
+# 3. View Flex Gateway metrics
+curl http://localhost:8200/api-portal/metrics
+
+# 4. Check Mule logs
+docker compose logs -f mule-agent-broker
+
+
+# 1. CREATE EMPLOYEE RECORD
+curl -X POST http://localhost:8200/hr-agent/onboarding/create-employee-record \
+  -H "Content-Type: application/json" \
+  -d '{"name":"John Doe","email":"john@company.com","department":"Engineering"}'
+
+# 2. SEND WELCOME EMAIL  
+curl -X POST http://localhost:8200/hr-agent/onboarding/send-welcome-email \
+  -d '{"name":"John Doe","email":"john@company.com"}'
+
+# 3. ASSIGN EQUIPMENT
+curl -X POST http://localhost:8200/hr-agent/onboarding/assign-equipment \
+  -d '{"employeeId":1,"department":"Engineering"}'
+
+# 4. VALIDATE ONBOARDING
+curl -X POST http://localhost:8200/hr-agent/policy/validate-onboarding
+
+# 5. CHECK ELIGIBILITY
+curl -X POST http://localhost:8200/hr-agent/policy/check-eligibility \
+  -d '{"age":25,"documents":["id","ssn","degree"]}'
+
+# 6. COMPLIANCE AUDIT
+curl -X POST http://localhost:8200/hr-agent/policy/compliance-audit \
+  -d '{"employeeId":1}'
+
+# 7. SEARCH EMPLOYEE
+curl -X POST http://localhost:8200/hr-agent/query/search-employee \
+  -d '{"query":"John"}'
+
+# 8. GET EMPLOYEE DETAILS
+curl http://localhost:8200/hr-agent/query/get-employee-details/1
+
+# 9. LIST DEPARTMENT
+curl http://localhost:8200/hr-agent/query/list-department/Engineering
+
+# Run ALL 9 APIs in sequence
+./deploy.sh
+
+# 1-3. Complete Onboarding
+curl -X POST http://localhost:8200/hr-agent/onboarding/create-employee-record -H "Content-Type: application/json" -d '{"name":"John Doe","email":"john@company.com","department":"Engineering"}'
+curl -X POST http://localhost:8200/hr-agent/onboarding/send-welcome-email -H "Content-Type: application/json" -d '{"employeeId":1,"name":"John Doe","email":"john@company.com","department":"Engineering"}'
+curl -X POST http://localhost:8200/hr-agent/onboarding/assign-equipment -H "Content-Type: application/json" -d '{"employeeId":1,"department":"Engineering"}'
+
+# 4-6. Policy Validation
+curl -X POST http://localhost:8200/hr-agent/policy/validate-onboarding
+curl -X POST http://localhost:8200/hr-agent/policy/check-eligibility -H "Content-Type: application/json" -d '{"age":28,"documents":["passport","ssn","degree"],"backgroundCheck":true}'
+curl -X POST http://localhost:8200/hr-agent/policy/compliance-audit -H "Content-Type: application/json" -d '{"employeeId":1}'
+
+# 7-9. Query APIs
+curl -X POST http://localhost:8200/hr-agent/query/search-employee -H "Content-Type: application/json" -d '{"query":"John"}'
+curl http://localhost:8200/hr-agent/query/get-employee-details/1
+curl http://localhost:8200/hr-agent/query/list-department/Engineering
+
+
+
+# 1. COMPLETE ONBOARDING (All 4 steps auto-orchestrated)
+curl -X POST http://localhost:8200/agent-fabric/hr/onboard \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Alice Chen",
+    "email": "alice@company.com",
+    "department": "Engineering",
+    "age": 28
+  }'
+
+# 2. POLICY VALIDATION (All 3 policies checked)
+curl -X POST http://localhost:8200/agent-fabric/hr/validate \
+  -H "Content-Type: application/json" \
+  -d '{"employeeId": 1}'
+
+# 3. EMPLOYEE SEARCH
+curl -X POST http://localhost:8200/agent-fabric/hr/query \
+  -H "Content-Type: application/json" \
+  -d '{"query": "Alice"}'
+
+# 4. DEPARTMENT LISTING
+curl -X POST http://localhost:8200/agent-fabric/hr/query \
+  -H "Content-Type: application/json" \
+  -d '{"department": "Engineering"}'
+
+# 5. HEALTH CHECK
+curl http://localhost:8200/agent-fabric/health
+

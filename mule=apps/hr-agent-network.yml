@@ -1,0 +1,81 @@
+apiVersion: agentfabric.mulesoft.com/v1alpha1
+kind: AgentNetwork
+metadata:
+  name: hr-agent-network
+  namespace: hr-system
+spec:
+  brokers:
+    - name: hr-agent-fabric-broker
+      type: orchestration
+      version: "2.0"
+      capabilities:
+        - orchestrate-onboarding
+        - validate-policies
+        - query-employees
+      endpoints:
+        - http://flex-gateway:8080/agent-fabric/hr
+
+  workflows:
+    - name: employee-onboarding-workflow
+      description: "Complete employee onboarding"
+      sequence:
+        - capability: create-employee-record
+          agent: employee-onboarding-agent
+        - capability: check-eligibility
+          agent: hr-policy-agent
+        - capability: send-welcome-email
+          agent: employee-onboarding-agent
+        - capability: assign-equipment
+          agent: employee-onboarding-agent
+
+    - name: hr-policy-workflow
+      description: "Policy validation and compliance"
+      parallel:
+        - capability: validate-onboarding
+          agent: hr-policy-agent
+        - capability: check-eligibility
+          agent: hr-policy-agent
+        - capability: compliance-audit
+          agent: hr-policy-agent
+
+    - name: employee-query-workflow
+      description: "Employee data operations"
+      router:
+        search-employee: employee-query-agent
+        get-employee-details: employee-query-agent
+        list-department: employee-query-agent
+
+  agents:
+    - name: employee-onboarding-agent
+      type: specialist
+      capabilities:
+        - create-employee-record
+        - send-welcome-email
+        - assign-equipment
+      mcpServer: hr-mcp-server
+
+    - name: hr-policy-agent
+      type: specialist
+      capabilities:
+        - validate-onboarding
+        - check-eligibility
+        - compliance-audit
+      mcpServer: hr-mcp-server
+
+    - name: employee-query-agent
+      type: specialist
+      capabilities:
+        - search-employee
+        - get-employee-details
+        - list-department
+      mcpServer: hr-mcp-server
+
+  governance:
+    policies:
+      - name: pii-protection
+        rules:
+          - "Mask employee SSNs"
+          - "Log all PII access"
+      - name: rate-limit
+        window: 1m
+        requests: 100

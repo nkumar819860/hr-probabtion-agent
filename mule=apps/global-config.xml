@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mule.com/mule-core/current/mule"
+      xmlns:db="http://www.mule.com/seda/db/1.10"
+      xmlns:email="http://www.mule.com/seda/email/1.0"
+      xmlns:http="http://www.mule.com/http/current/mule-http"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  
+  <!-- Database Config -->
+  <db:config name="HR_Database_Config">
+    <db:generic-connection 
+      host="${db.host:postgres-hr}" 
+      port="${db.port:5432}"
+      user="${db.user:mule}" 
+      password="${db.password:mule123}"
+      database="${db.name:hr_probation}"/>
+  </db:config>
+
+  <!-- SMTP Email Config -->
+  <email:smtp-config name="Email_Config">
+    <email:smtp-connection 
+      host="${smtp.host:smtp.gmail.com}"
+      port="${smtp.port:587}"
+      user="${smtp.user:your-email@gmail.com}"
+      password="${smtp.password:your-app-password}"
+      from="${smtp.from:noreply@hr.company.com}"
+      tls="true"/>
+  </email:smtp-config>
+
+  <!-- HTTP Listener Config -->
+  <http:listener-config name="HTTP_Listener_config">
+    <http:listener-connection host="0.0.0.0" port="8081" />
+  </http:listener-config>
+</mule>

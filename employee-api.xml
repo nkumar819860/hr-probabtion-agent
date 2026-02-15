@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mule.com/mule-core/current/mule"
+      xmlns:db="http://www.mule.com/seda/db/1.10"
+      xmlns:http="http://www.mule.com/http/current/mule-http"
+      xmlns:ee="http://www.mule.com/seda/ee/core">
+  
+  <http:listener-config name="HTTP">
+    <http:listener-connection host="0.0.0.0" port="8081"/>
+  </http:listener-config>
+  
+  <db:config name="DB">
+    <db:generic-connection 
+      host="${DB_HOST}" port="${DB_PORT}" 
+      user="${DB_USER}" password="${DB_PASS}" 
+      database="${DB_NAME}"/>
+  </db:config>
+
+  <flow name="get-employees">
+    <http:listener config-ref="HTTP" path="/employees" method="GET"/>
+    <db:select config-ref="DB">
+      <db:sql>SELECT * FROM employees ORDER BY created_at DESC</db:sql>
+    </db:select>
+    <ee:transform>
+      <ee:message>
+        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  success: true,
+  count: sizeOf(payload),
+  employees: payload
+}]]></ee:set-payload>
+      </ee:message>
+    </ee:transform>
+  </flow>
+
+  <flow name="get-employee">
+    <http:listener config-ref="HTTP" path="/employees/{id}" method="GET"/>
+    <db:select config-ref="DB">
+      <db:sql>SELECT * FROM employees WHERE employee_id = :id</db:sql>
+      <db:input-parameters>#[{id: attributes.pathParameters.id}]</db:input-parameters>
+    </db:select>
+    <choice>
+      <when expression="#[sizeOf(payload) > 0]">
+        <ee:transform>
+          <ee:message>
+            <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+payload[0] ++ { success: true }]]></ee:set-payload>
+          </ee:message>
+        </ee:transform>
+      </when>
+      <otherwise>
+        <set-payload value="#[output application/json --- {success: false, error: 'Employee not found'}]"/>
+      </otherwise>
+    </choice>
+  </flow>
+</mule>

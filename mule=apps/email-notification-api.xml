@@ -1,0 +1,134 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mule.com/mule-core/current/mule"
+      xmlns:db="http://www.mule.com/seda/db/1.10"
+      xmlns:ee="http://www.mule.com/seda/ee/core"
+      xmlns:email="http://www.mule.com/seda/email/1.0"
+      xmlns:http="http://www.mule.com/http/current/mule-http">
+  
+  <http:listener-config name="HTTP_Listener_config">
+    <http:listener-connection host="0.0.0.0" port="8084" />
+  </http:listener-config>
+
+  <!-- POST /email/probation-complete -->
+  <flow name="send-probation-complete-email">
+    <http:listener config-ref="HTTP_Listener_config" path="/email/probation-complete" method="POST"/>
+    
+    <!-- Get employee details -->
+    <db:select config-ref="HR_Database_Config">
+      <db:sql><![CDATA[SELECT * FROM employees WHERE employee_id = :id]]></db:sql>
+      <db:input-parameters>#[{ id: payload.employeeId }]</db:input-parameters>
+    </db:select>
+    
+    <choice>
+      <when expression="#[sizeOf(payload) > 0]">
+        <ee:transform doc:name="Email Template">
+          <ee:message>
+            <ee:set-payload><![CDATA[%dw 2.0
+output application/java
+---
+{
+  toAddresses: payload[0].email,
+  subject: "🎉 Probation Period Successfully Completed!",
+  body: "<html>
+    <h1>Congratulations " ++ payload[0].name ++ "!</h1>
+    <p>Your <strong>" ++ payload[0].department ++ "</strong> probation period has been successfully completed.</p>
+    <ul>
+      <li><strong>Employee ID:</strong> " ++ payload[0].employee_id ++ "</li>
+      <li><strong>Hire Date:</strong> " ++ payload[0].hire_date ++ "</li>
+      <li><strong>Completion Date:</strong> " ++ now() as String {format: "yyyy-MM-dd"} ++ "</li>
+    </ul>
+    <p>Welcome to the team!</p>
+    <hr>
+    <small>HR Automation System</small>
+  </html>",
+  contentType: "text/html"
+}]]></ee:set-payload>
+          </ee:message>
+        </ee:transform>
+
+        <!-- Send Email -->
+        <email:send config-ref="Email_Config">
+          <email:to-addresses>#[payload.toAddresses]</email:to-addresses>
+          <email:from-address>#[vars.smtp.from]</email:from-address>
+          <email:subject>#[payload.subject]</email:subject>
+          <email:body contentType="#[payload.contentType]">
+            <email:content>#[payload.body]</email:content>
+          </email:body>
+        </email:send>
+
+        <!-- Log success -->
+        <logger level="INFO" message="📧 Probation email sent to #[payload.toAddresses]"/>
+
+        <ee:transform>
+          <ee:message>
+            <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  success: true,
+  employeeId: payload.employeeId,
+  emailSentTo: payload[0].email,
+  message: "Probation completion email sent successfully",
+  timestamp: now()
+}]]></ee:set-payload>
+          </ee:message>
+        </ee:transform>
+      </when>
+      <otherwise>
+        <set-payload value="#[output application/json --- { success: false, error: 'Employee not found' }]"/>
+      </otherwise>
+    </choice>
+  </flow>
+
+  <!-- POST /email/batch-probation-reminder -->
+  <flow name="send-batch-probation-reminders">
+    <http:listener config-ref="HTTP_Listener_config" path="/email/batch-reminders" method="POST"/>
+    
+    <db:select config-ref="HR_Database_Config">
+      <db:sql><![CDATA[
+        SELECT * FROM employees 
+        WHERE probation_status = 'ACTIVE' 
+        AND probation_end_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '30 days'
+      ]]></db:sql>
+    </db:select>
+    
+    <foreach collection="#[payload]">
+      <ee:transform>
+        <ee:message>
+          <ee:set-payload><![CDATA[%dw 2.0
+output application/java
+---
+{
+  toAddresses: $.email,
+  subject: "⏰ Probation Reminder - " ++ $.name,
+  body: "<h2>Probation Reminder</h2>
+    <p>Dear " ++ $.name ++ ",</p>
+    <p>Your probation period ends on <strong>" ++ $.probation_end_date ++ "</strong>.</p>
+    <p>Please ensure all documentation is complete.</p>"
+}]]></ee:set-payload>
+        </ee:message>
+      </ee:transform>
+      
+      <email:send config-ref="Email_Config">
+        <email:to-addresses>#[payload.toAddresses]</email:to-addresses>
+        <email:subject>#[payload.subject]</email:subject>
+        <email:body contentType="text/html">
+          <email:content>#[payload.body]</email:content>
+        </email:body>
+      </email:send>
+    </foreach>
+
+    <ee:transform>
+      <ee:message>
+        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  success: true,
+  emailsSent: sizeOf(payload),
+  message: "Batch probation reminders sent successfully"
+}]]></ee:set-payload>
+      </ee:message>
+    </ee:transform>
+  </flow>
+</mule>

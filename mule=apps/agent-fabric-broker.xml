@@ -1,0 +1,103 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns:http="http://www.mulesoft.org/schema/mule/http"
+      xmlns="http://www.mulesoft.org/schema/mule/core"
+      xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core 
+      http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+      http://www.mulesoft.org/schema/mule/http 
+      http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd">
+
+  <http:listener-config name="HTTP_Listener_config">
+    <http:listener-connection host="0.0.0.0" port="8081"/>
+  </http:listener-config>
+
+  <!-- Agent Fabric Broker Orchestrator -->
+  <flow name="hr-agent-broker-main">
+    <http:listener config-ref="HTTP_Listener_config" path="/hr-agent/*"/>
+    
+    <!-- Load Agent Network Spec -->
+    <set-variable variableName="agentNetwork" value="#[readUrl('classpath://hr-agent-network.yaml')]"/>
+    
+    <!-- Route to appropriate agent based on intent -->
+    <choice>
+      <when expression="#[payload contains 'onboard']">
+        <flow-ref name="employee-onboarding-agent"/>
+      </when>
+      <when expression="#[payload contains 'policy']">
+        <flow-ref name="hr-policy-agent"/>
+      </when>
+      <when expression="#[payload contains 'query']">
+        <flow-ref name="employee-query-agent"/>
+      </when>
+      <otherwise>
+        <set-payload value='{"error": "Unknown HR request"}'/>
+      </otherwise>
+    </choice>
+    
+    <http:response-status code="200"/>
+    <logger level="INFO" message="#[payload]"/>
+  </flow>
+
+  <!-- Employee Onboarding Agent -->
+  <flow name="employee-onboarding-agent">
+    <ee:transform>
+      <ee:message>
+        <ee:set-payload><![CDATA[
+          %dw 2.0
+          output application/json
+          ---
+          {
+            action: "onboard_employee",
+            data: payload,
+            agent: "employee-onboarding"
+          }
+        ]]></ee:set-payload>
+      </ee:message>
+    </ee:transform>
+    
+    <!-- Call MCP Server for execution -->
+    <http:request method="POST" url="http://mcp-server:8080/execute">
+      <http:body>#[payload]</http:body>
+    </http:request>
+    
+    <!-- Update Employee Database -->
+    <db:insert config-ref="hr-db-config">
+      <db:sql>INSERT INTO employees (name, email, department, status) VALUES (:name, :email, :department, 'onboarded')</db:sql>
+      <db:input-parameters>#[{
+        name: payload.name,
+        email: payload.email,
+        department: payload.department
+      }]</db:input-parameters>
+    </db:insert>
+  </flow>
+
+  <!-- HR Policy Agent -->
+  <flow name="hr-policy-agent">
+    <http:request method="POST" url="http://mcp-server:8080/policy-check">
+      <http:body>#[payload]</http:body>
+    </http:request>
+  </flow>
+
+  <!-- Employee Query Agent -->
+  <flow name="employee-query-agent">
+    <db:select config-ref="hr-db-config">
+      <db:sql>SELECT * FROM employees WHERE name LIKE :name OR email LIKE :email</db:sql>
+      <db:input-parameters>#[{
+        name: "%" ++ (payload.name default "") ++ "%",
+        email: "%" ++ (payload.email default "") ++ "%"
+      }]</db:input-parameters>
+    </db:select>
+  </flow>
+
+  <!-- Database Configuration -->
+  <db:config name="hr-db-config">
+    <db:generic-connection 
+      host="${db.host}" 
+      port="${db.port}" 
+      user="${db.user}" 
+      password="${db.pass}" 
+      database="${db.name}"/>
+  </db:config>
+
+</mule>

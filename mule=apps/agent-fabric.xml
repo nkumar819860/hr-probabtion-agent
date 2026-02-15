@@ -1,0 +1,207 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns:http="http://www.mulesoft.org/schema/mule/http"
+      xmlns:db="http://www.mulesoft.org/schema/mule/db"
+      xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+      xmlns="http://www.mulesoft.org/schema/mule/core"
+      xsi:schemaLocation="
+        http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+        http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd
+        http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+
+  <!-- CONFIGURATIONS -->
+  <http:listener-config name="HTTP_Listener_config">
+    <http:listener-connection host="0.0.0.0" port="8081"/>
+  </http:listener-config>
+
+  <db:config name="hr-db-config">
+    <db:generic-connection 
+      host="${db.host}" port="${db.port}" 
+      user="${db.user}" password="${db.pass}" 
+      database="${db.name}"/>
+  </db:config>
+
+  <!-- AGENT FABRIC MAIN BROKER -->
+  <flow name="hr-agent-fabric-broker">
+    <http:listener config-ref="HTTP_Listener_config" path="/agent-fabric/hr/*"/>
+    
+    <!-- Parse Agent Fabric Request -->
+    <set-variable variableName="intent" value="#[lowerCase(attributes.uri.pathMatches.group[1])]"/>
+    <set-variable variableName="agentType" value="#[lowerCase(attributes.uri.pathMatches.group[2])]"/>
+    
+    <!-- Agent Fabric Orchestration Logic -->
+    <choice>
+      <!-- EMPLOYEE ONBOARDING WORKFLOW -->
+      <when expression="#[vars.intent == 'onboard']">
+        <flow-ref name="employee-onboarding-workflow"/>
+      </when>
+      
+      <!-- POLICY VALIDATION WORKFLOW -->
+      <when expression="#[vars.intent == 'validate']">
+        <flow-ref name="hr-policy-workflow"/>
+      </when>
+      
+      <!-- EMPLOYEE QUERY WORKFLOW -->
+      <when expression="#[vars.intent == 'query']">
+        <flow-ref name="employee-query-workflow"/>
+      </when>
+      
+      <otherwise>
+        <set-payload value="#[{
+          error: 'Unknown agent fabric workflow',
+          available: ['onboard', 'validate', 'query']
+        }]"/>
+        <http:response-status code="400"/>
+      </otherwise>
+    </choice>
+  </flow>
+
+  <!-- 1. EMPLOYEE ONBOARDING WORKFLOW (3 APIs) -->
+  <flow name="employee-onboarding-workflow">
+    <logger level="INFO" message="🚀 Starting Employee Onboarding Workflow"/>
+    
+    <!-- Step 1: Create Employee Record -->
+    <http:request method="POST" url="http://localhost:8081/hr-agent/onboarding/create-employee-record">
+      <http:body>#[payload]</http:body>
+    </http:request>
+    <set-variable variableName="employeeId" value="#[payload.data.employeeId]"/>
+    
+    <!-- Step 2: Policy Check (Dependency) -->
+    <http:request method="POST" url="http://localhost:8081/hr-agent/policy/check-eligibility">
+      <http:body>#[{
+        age: payload.age default 25,
+        documents: payload.documents default [],
+        backgroundCheck: true
+      }]</http:body>
+    </http:request>
+    
+    <!-- Step 3: Send Welcome Email -->
+    <http:request method="POST" url="http://localhost:8081/hr-agent/onboarding/send-welcome-email">
+      <http:body>#[{
+        employeeId: vars.employeeId,
+        name: payload.name,
+        email: payload.email,
+        department: payload.department
+      }]</http:body>
+    </http:request>
+    
+    <!-- Step 4: Assign Equipment -->
+    <http:request method="POST" url="http://localhost:8081/hr-agent/onboarding/assign-equipment">
+      <http:body>#[{
+        employeeId: vars.employeeId,
+        department: payload.department
+      }]</http:body>
+    </http:request>
+    
+    <!-- Final Response -->
+    <ee:transform>
+      <ee:message>
+        <ee:set-payload>#[{
+          workflow: "employee-onboarding",
+          status: "completed",
+          agentNetwork: {
+            agentsCalled: ["employee-onboarding-agent", "hr-policy-agent"],
+            capabilitiesUsed: [
+              "create-employee-record",
+              "check-eligibility", 
+              "send-welcome-email",
+              "assign-equipment"
+            ],
+            employeeId: vars.employeeId
+          },
+          timestamp: now()
+        }]</ee:set-payload>
+      </ee:message>
+    </ee:transform>
+  </flow>
+
+  <!-- 2. HR POLICY WORKFLOW (3 APIs) -->
+  <flow name="hr-policy-workflow">
+    <logger level="INFO" message="🔍 Starting HR Policy Validation Workflow"/>
+    
+    <!-- Step 1: Validate Onboarding Policy -->
+    <http:request method="POST" url="http://localhost:8081/hr-agent/policy/validate-onboarding"/>
+    
+    <!-- Step 2: Check Eligibility -->
+    <http:request method="POST" url="http://localhost:8081/hr-agent/policy/check-eligibility">
+      <http:body>#[payload]</http:body>
+    </http:request>
+    
+    <!-- Step 3: Compliance Audit -->
+    <http:request method="POST" url="http://localhost:8081/hr-agent/policy/compliance-audit">
+      <http:body>#[{
+        employeeId: payload.employeeId default 0
+      }]</http:body>
+    </http:request>
+    
+    <!-- Policy Workflow Response -->
+    <ee:transform>
+      <ee:message>
+        <ee:set-payload>#[{
+          workflow: "hr-policy-validation",
+          status: "completed",
+          agentNetwork: {
+            agent: "hr-policy-agent",
+            capabilitiesUsed: ["validate-onboarding", "check-eligibility", "compliance-audit"],
+            compliant: true
+          }
+        }]</ee:set-payload>
+      </ee:message>
+    </ee:transform>
+  </flow>
+
+  <!-- 3. EMPLOYEE QUERY WORKFLOW (3 APIs) -->
+  <flow name="employee-query-workflow">
+    <choice>
+      <when expression="#[payload.query? && payload.query != '']">
+        <!-- Search Employee -->
+        <http:request method="POST" url="http://localhost:8081/hr-agent/query/search-employee">
+          <http:body>#[{query: payload.query}]</http:body>
+        </http:request>
+      </when>
+      <when expression="#[payload.department?]">
+        <!-- List Department -->
+        <http:request method="GET" url="http://localhost:8081/hr-agent/query/list-department/#[payload.department]"/>
+      </when>
+      <when expression="#[payload.id?]">
+        <!-- Get Employee Details -->
+        <http:request method="GET" url="http://localhost:8081/hr-agent/query/get-employee-details/#[payload.id]"/>
+      </when>
+      <otherwise>
+        <set-payload value="#[{
+          error: "Specify query, department, or id"
+        }]"/>
+      </otherwise>
+    </choice>
+    
+    <ee:transform>
+      <ee:message>
+        <ee:set-payload>#[{
+          workflow: "employee-query",
+          status: "completed",
+          agentNetwork: {
+            agent: "employee-query-agent",
+            capabilitiesUsed: ["search-employee", "get-employee-details", "list-department"]
+          },
+          data: payload.data default payload
+        }]</ee:set-payload>
+      </ee:message>
+    </ee:transform>
+  </flow>
+
+  <!-- AGENT FABRIC HEALTH CHECK -->
+  <flow name="agent-fabric-health">
+    <http:listener config-ref="HTTP_Listener_config" path="/agent-fabric/health"/>
+    <db:select config-ref="hr-db-config">
+      <db:sql>SELECT COUNT(*) as employee_count FROM employees</db:sql>
+    </db:select>
+    <set-payload value="#[{
+      status: "healthy",
+      agentNetwork: "hr-agent-network",
+      agents: ["employee-onboarding-agent", "hr-policy-agent", "employee-query-agent"],
+      database: "connected",
+      employees: payload.employee_count
+    }]"/>
+  </flow>
+
+</mule>

@@ -1,0 +1,83 @@
+apiVersion: agentfabric.mulesoft.com/v1alpha1
+kind: AgentNetwork
+metadata:
+  name: hr-agent-network
+  namespace: hr-system
+spec:
+  brokers:
+    - name: hr-main-broker
+      type: orchestration
+      version: "1.0"
+      capabilities:
+        - employee-onboarding
+        - policy-check
+        - employee-query
+      endpoints:
+        - http://agent-broker:8081/hr-agent
+
+  agents:
+    - name: employee-onboarding-agent
+      type: specialist
+      version: "1.0"
+      description: "Handles new employee onboarding workflow"
+      capabilities:
+        - create-employee-record
+        - send-welcome-email
+        - assign-equipment
+      dependencies:
+        - hr-policy-agent
+        - employee-database-mcp
+      mcpServer: hr-mcp-server
+
+    - name: hr-policy-agent
+      type: specialist
+      version: "1.0"
+      description: "HR policy compliance checker"
+      capabilities:
+        - validate-onboarding
+        - check-eligibility
+        - compliance-audit
+      mcpServer: hr-mcp-server
+
+    - name: employee-query-agent
+      type: specialist
+      version: "1.0"
+      description: "Employee data query agent"
+      capabilities:
+        - search-employee
+        - get-employee-details
+        - list-department
+      mcpServer: hr-mcp-server
+
+  mcpServers:
+    - name: hr-mcp-server
+      endpoint: "http://mcp-server:8080"
+      tools:
+        - name: postgres-connector
+          description: "PostgreSQL database operations"
+          endpoint: "jdbc:postgresql://postgres:5432/hr_db"
+        - name: email-service
+          description: "Employee notification service"
+          endpoint: "http://email-service:8080"
+        - name: equipment-api
+          description: "IT equipment assignment"
+          endpoint: "http://equipment-api:3000"
+
+  governance:
+    policies:
+      - name: data-privacy
+        rules:
+          - "PNPII allowed only for authorized agents"
+          - "Audit all employee data access"
+      - name: rate-limiting
+        rules:
+          - "Max 100 requests/min per agent"
+
+  observability:
+    metrics:
+      - latency
+      - error-rate
+      - request-volume
+    traces:
+      - agent-interactions
+      - mcp-calls

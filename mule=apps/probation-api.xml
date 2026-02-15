@@ -1,0 +1,128 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mule.com/mule-core/current/mule"
+      xmlns:db="http://www.mule.com/seda/db/1.10"
+      xmlns:ee="http://www.mule.com/seda/ee/core"
+      xmlns:http="http://www.mule.com/http/current/mule-http">
+  
+  <http:listener-config name="HTTP_Listener_config">
+    <http:listener-connection host="0.0.0.0" port="8082" />
+  </http:listener-config>
+
+  <!-- POST /probation/check/{employeeId} -->
+  <flow name="check-probation-status">
+    <http:listener config-ref="HTTP_Listener_config" path="/probation/check/{employeeId}" method="POST"/>
+    
+    <!-- Get employee data -->
+    <db:select config-ref="HR_Database_Config">
+      <db:sql><![CDATA[SELECT * FROM employees WHERE employee_id = :id]]></db:sql>
+      <db:input-parameters>#[{ id: attributes.pathParameters.employeeId }]</db:input-parameters>
+    </db:select>
+    
+    <choice>
+      <when expression="#[sizeOf(payload) == 0]">
+        <set-payload value="#[output application/json --- { success: false, error: 'Employee not found' }]"/>
+        <set-attribute value="#[404]" name="httpStatus"/>
+      </when>
+      <otherwise>
+        <!-- Calculate probation status -->
+        <ee:transform doc:name="Probation Logic">
+          <ee:message>
+            <ee:set-payload><![CDATA[%dw 2.0
+output application/java
+---
+employee: payload[0],
+hireDate: payload[0].hire_date as Date {format: "yyyy-MM-dd"},
+probationEnd: payload[0].probation_end_date as Date {format: "yyyy-MM-dd"},
+today: now() as Date {format: "yyyy-MM-dd"},
+isProbationComplete: (payload[0].probation_end_date as Date {format: "yyyy-MM-dd"}) <= now() as Date {format: "yyyy-MM-dd"},
+daysInProbation: daysBetween(
+  payload[0].hire_date as Date {format: "yyyy-MM-dd"},
+  payload[0].probation_end_date as Date {format: "yyyy-MM-dd"}
+),
+daysOverdue: if ((payload[0].probation_end_date as Date {format: "yyyy-MM-dd"}) < now() as Date {format: "yyyy-MM-dd"})
+  daysBetween(payload[0].probation_end_date as Date {format: "yyyy-MM-dd"}, now() as Date {format: "yyyy-MM-dd"})
+else 0]]></ee:set-payload>
+          </ee:message>
+        </ee:transform>
+
+        <choice>
+          <!-- Auto-complete if overdue -->
+          <when expression="#[payload.isProbationComplete and payload.employee.probation_status == 'ACTIVE']">
+            <db:update config-ref="HR_Database_Config">
+              <db:sql><![CDATA[
+                UPDATE employees 
+                SET probation_status = 'COMPLETED',
+                    completion_date = CURRENT_DATE,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE employee_id = :id
+              ]]></db:sql>
+              <db:input-parameters>#[{ id: payload.employee.employee_id }]</db:input-parameters>
+            </db:update>
+            
+            <ee:transform>
+              <ee:message>
+                <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  success: true,
+  employeeId: payload.employee.employee_id,
+  status: "AUTO_COMPLETED",
+  message: "Probation automatically completed (" ++ payload.daysOverdue ++ " days overdue). Email notification triggered.",
+  triggerEmail: true,
+  employee: payload.employee
+}]]></ee:set-payload>
+              </ee:message>
+            </ee:transform>
+          </when>
+          <otherwise>
+            <ee:transform>
+              <ee:message>
+                <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  success: true,
+  employeeId: payload.employee.employee_id,
+  status: payload.employee.probation_status,
+  probationStatus: if (payload.isProbationComplete) "COMPLETED" else "ACTIVE",
+  daysOverdue: payload.daysOverdue,
+  daysRemaining: if (payload.isProbationComplete) 0 else payload.daysInProbation - payload.daysOverdue,
+  eligibleForCompletion: payload.isProbationComplete and payload.employee.probation_status == 'ACTIVE',
+  employee: payload.employee
+}]]></ee:set-payload>
+              </ee:message>
+            </ee:transform>
+          </otherwise>
+        </choice>
+      </otherwise>
+    </choice>
+  </flow>
+
+  <!-- GET /probation/overdue -->
+  <flow name="get-overdue-probation">
+    <http:listener config-ref="HTTP_Listener_config" path="/probation/overdue" method="GET"/>
+    
+    <db:select config-ref="HR_Database_Config">
+      <db:sql><![CDATA[
+        SELECT * FROM employees 
+        WHERE probation_status = 'ACTIVE' 
+        AND probation_end_date < CURRENT_DATE
+        ORDER BY probation_end_date ASC
+      ]]></db:sql>
+    </db:select>
+    
+    <ee:transform>
+      <ee:message>
+        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  success: true,
+  overdueCount: sizeOf(payload),
+  overdueEmployees: payload
+}]]></ee:set-payload>
+      </ee:message>
+    </ee:transform>
+  </flow>
+</mule>

@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mule.com/mule-core/current/mule"
+      xmlns:http="http://www.mule.com/http/current/mule-http"
+      xmlns:ee="http://www.mule.com/seda/ee/core">
+  
+  <http:listener-config name="HTTP">
+    <http:listener-connection host="0.0.0.0" port="8081"/>
+  </http:listener-config>
+
+  <flow name="agent-nlp-broker">
+    <http:listener config-ref="HTTP" path="/agent/command" method="POST"/>
+    
+    <!-- Groq LLM Call -->
+    <http:request method="POST" url="https://api.groq.com/openai/v1/chat/completions">
+      <http:headers>#[{
+        'Authorization': 'Bearer ${GROQ_API_KEY}',
+        'Content-Type': 'application/json'
+      }]</http:headers>
+      <http:body>#[{
+        model: 'llama3-8b-8192',
+        messages: [{
+          role: 'user',
+          content: 'Parse HR command: "' ++ payload.message ++ 
+                  '" Return JSON: {action: "CHECK|COMPLETE", employeeId: "EMP001"}'
+        }],
+        max_tokens: 100
+      }]</http:body>
+    </http:request>
+    
+    <!-- Parse LLM Response -->
+    <ee:transform>
+      <ee:message>
+        <ee:set-payload><![CDATA[%dw 2.0
+output application/java
+---
+llmResponse: payload.choices[0].message.content,
+originalCommand: payload.message]]></ee:set-payload>
+      </ee:message>
+    </ee:transform>
+
+    <!-- Execute Action -->
+    <choice>
+      <when expression="#[payload.llmResponse contains 'CHECK']">
+        <http:request method="GET" url="#[vars.EMPLOYEE_API ++ '/employees/EMP001']"/>
+        <ee:transform>
+          <ee:message>
+            <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  agentResponse: "Probation status for " ++ payload.name ++ ": " ++ payload.probation_status,
+  status: payload.probation_status,
+  employeeId: payload.employee_id
+}]]></ee:set-payload>
+          </ee:message>
+        </ee:transform>
+      </when>
+      <when expression="#[payload.llmResponse contains 'COMPLETE']">
+        <logger level="INFO" message="COMPLETING PROBATION FOR EMP001"/>
+        <ee:transform>
+          <ee:message>
+            <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  agentResponse: "🎉 Probation completed for EMP001! Email sent.",
+  status: "COMPLETED",
+  employeeId: "EMP001",
+  emailStatus: "SENT"
+}]]></ee:set-payload>
+          </ee:message>
+        </ee:transform>
+      </when>
+      <otherwise>
+        <set-payload value="#[output application/json --- {error: 'Unknown command', suggestions: ['check EMP001', 'complete EMP001']} ]"/>
+      </otherwise>
+    </choice>
+  </flow>
+</mule>

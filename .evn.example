@@ -1,0 +1,4 @@
+GROQ_API_KEY=gsk_your-groq-key-here
+ANYPOINT_ORG=your-org
+ANYPOINT_ENV=sandbox
+CLIENT_ID=your-client-id
